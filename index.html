@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="jp">
+<head>
+<title>Audio Test</title>
+<meta charset="utf-8">
+<script src="js/jquery-1.11.0.min.js"></script>
+<script src='js/mididevice.js'></script>
+<link rel="stylesheet" type="text/css" href="css/keyboard.css"> 
+<script src="js/keyboard.js"></script>
+<script src="js/slider.js"></script>
+<script src="js/button.js"></script>
+<script src="js/synthprm.js"></script>
+<style type="text/css">
+</style>
+
+<script type="text/javascript">
+ 
+if(typeof(webkitAudioContext)!=="undefined")
+    var audioctx = new webkitAudioContext();
+else if(typeof(AudioContext)!=="undefined")
+    var audioctx = new AudioContext();
+ 
+function getfreq(note) {
+	// A4(69) -> 440Hz
+	// Math.pow(2,1/12)
+	var octofs=Math.floor((note-60)/12);
+	var key=(note%12)-9; // start from 'A'
+	var freq=(440*Math.pow(Math.pow(2,1/12),key))*Math.pow(2,octofs);
+	var keyname=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+	console.log("%s(%d):%f",keyname[(key+9)%12],octofs+4,freq);
+  	return freq;
+}
+
+const mapbitlength=32;
+const mapbytenum=128/mapbitlength;
+var notemap=new Array(mapbytenum);
+for (var i=0;i<mapbytenum;i++) notemap[i]=0;
+function getMapBit(note) { return note%mapbitlength; }
+function getMapIndex(note) { return Math.floor(note/mapbitlength); }
+function setNotemap(note) { notemap[getMapIndex(note)]|=(1<<getMapBit(note)); }
+function clrNotemap(note) { notemap[getMapIndex(note)]&=~(1<<getMapBit(note)); }
+function chkNotemap(note) { return notemap[getMapIndex(note)]&(1<<getMapBit(note)); }
+function chkAlloff() { for (var i=0; i<mapbytenum; i++) if (notemap[i]!=0) return false; return true; }
+
+var osc=new Array(128);
+for (var note=0; note<128; note++) osc[note]=0;
+var wavetype="sine";
+
+// mixer
+var gainosc1=audioctx.createGain();
+var gainnoise=audioctx.createGain();
+
+// filter
+var lpf=audioctx.createBiquadFilter();
+lpf.type="lowpass";
+lpf.frequency.value=10000;
+
+// connect node
+gainosc1.connect(lpf);
+gainnoise.connect(lpf);
+lpf.connect(audioctx.destination);
+function setwave(wave) {
+	wavetype=wave;
+}
+function setlpffreq(value) {
+	const freqmin=100;
+	const freqmax=20000;
+	var freq=(freqmax-freqmin)*value+freqmin;
+	console.log(freq);
+	lpf.frequency.value=freq; 
+}
+function setreso(value) {
+	const resomin=-4;
+	const resomax=3;
+	var reso=(resomax-resomin)*value+resomin;
+	console.log(Math.pow(10,reso));
+	lpf.Q.value=Math.pow(10,reso); 
+}
+
+var scrpbufsize = 1024;
+var scrp=audioctx.createScriptProcessor(scrpbufsize);
+scrp.onaudioprocess = onAudioProcess;
+scrp.connect(gainnoise)
+var noiseosc=0;
+function doNoise() {
+	if (chkAlloff()) {
+		if (noiseosc) {
+			noiseosc.stop(0);
+			noiseosc=0;
+		}
+	} else {
+		if (!noiseosc) {
+			noiseosc=audioctx.createOscillator();
+			noiseosc.connect(scrp);
+			noiseosc.start(0);
+		}
+	}
+}
+function onAudioProcess(e) {
+    var buf0 = e.outputBuffer.getChannelData(0);
+    var buf1 = e.outputBuffer.getChannelData(1);
+    if (noiseosc) for(var i = 0; i < scrpbufsize; ++i) buf0[i] = buf1[i] = (Math.random() - 0.5);
+    else for(var i = 0; i < scrpbufsize; ++i) buf0[i] = buf1[i] = 0;
+}
+
+function noteon(note) {
+	if (osc[note]!=0) osc[note].stop();
+	osc[note]=audioctx.createOscillator();
+	osc[note].frequency.value = getfreq(note);
+	osc[note].type = wavetype;
+	osc[note].connect(gainosc1);
+	osc[note].start();
+	setNotemap(note);
+	doNoise();
+}
+function noteoff(note) {
+	if (osc[note]==0) return;
+    osc[note].stop();
+    osc[note]=0;
+	clrNotemap(note);
+	doNoise();
+}
+</script>
+
+<script type="text/javascript">
+	function onMIDIMessage(e) {
+		var message=Math.floor(e.receivedTime) + ": ";
+		for (var i=0; i<e.data.length; i++) message+=e.data[i].toString(16)+" ";
+		console.log(message);
+		if (e.data[0]==0x90) {
+			noteon(e.data[1]);
+		} else if (e.data[0]==0x80) {
+			noteoff(e.data[1]);
+		}
+	}
+	function onSlider(idstring,value) {
+		//console.log("id:%s,value:%f",idstring,value);
+		switch (idstring) {
+		case 'lpf':
+			setlpffreq(value);
+			break;
+		case 'reso':
+			setreso(value);
+			break;
+		case 'levosc1':
+			gainosc1.gain.value=value;
+			break;
+		case 'levnoise':
+			gainnoise.gain.value=value;
+			break;
+		}
+	}
+	function onButton(idstring,status) {
+		//console.log("id:%s,status:%s",idstring,status);
+		switch (idstring) {
+		case 'sinbtn':
+			setwave("sine");
+			buttonSet('sqrbtn',false);
+			buttonSet('sawbtn',false);
+			buttonSet('tribtn',false);
+			break;
+		case 'sqrbtn':
+			setwave("square");
+			buttonSet('sinbtn',false);
+			buttonSet('sawbtn',false);
+			buttonSet('tribtn',false);
+			break;
+		case 'sawbtn':
+			setwave("sawtooth");
+			buttonSet('sinbtn',false);
+			buttonSet('sqrbtn',false);
+			buttonSet('tribtn',false);
+			break;
+		case 'tribtn':
+			setwave("triangle");
+			buttonSet('sinbtn',false);
+			buttonSet('sqrbtn',false);
+			buttonSet('sawbtn',false);
+			break;
+		}
+	}
+</script>
+
+<script type="text/javascript">
+        $(function() {
+          $('.whitekey,.blackkey').click(
+            function() {
+              console.log($(this).attr('id')+":click"+"current:"+$(this).attr('enable'));
+      		})
+        })
+        function keyStatusEnable(keyboard,note) {
+          var target=keyboard.children('#'+getNoteName(note));
+          target.css('background-color',"white");
+          target.attr('enable',true);
+        }
+        function keyStatusDisable(keyboard,note) {
+          var target=keyboard.children('#'+getNoteName(note));
+          target.css('background-color',"gray");
+          target.attr('enable',false);
+        }
+        function keyDown(kbd,num) {
+        	noteon(num);
+        }
+        function keyUp(kbd,num) {
+        	noteoff(num);
+        }
+        var dragStart=[];
+        function keyDragStart(kbd,num) {
+          dragStart[kbd]=num;
+        }
+        function keyDragEnd(kbd,num) {
+          var hi,lo;
+          if (dragStart[kbd]>=0) {
+            if (dragStart[kbd]>num) {
+              hi=dragStart[kbd];
+              lo=num;
+            } else {
+              hi=num;
+              lo=dragStart[kbd];
+            }
+         }
+         dragStart[kbd]=null;
+       }
+</script>
+
+</head>
+<body>
+<script  type="text/javascript">
+	midiAccess = navigator.requestMIDIAccess({
+		sysex : false
+	}).then(onMIDISuccess, onMIDIFailure);
+</script>
+<label>MIDI In</label>
+<select id="midiInputSelect" onchange="selectMidiInput()">
+	<option value="1">select input port</option>
+</select>
+<div id="panel1" style="position:absolute; left:10px; top:50px; width:500px; height:140px; border-style:solid; border-width:1px;">
+	<div style="position:absolute; left:0px; top:0px; width:500px; font-size:15px; text-align:center;">TEST SYNTHESIZER</div>
+	<div id="wavesection" style="position:absolute; left:10px; top:25px; width:60px; height:100px; border-style:solid; border-width:1px;">
+		<div style="position:absolute; left:0px; top:0px; width:60px; font-size:8px; text-align:center;">WAVE</div>
+		<div style="position:absolute; left:0px; top:25px;">
+			<div style="position:absolute; left:2px; top:0px; width:40px; font-size: 6px;">SINE</div>
+			<div style="position:absolute; left:2px; top:15px; width:40px; font-size: 6px;">SQR</div>
+			<div style="position:absolute; left:2px; top:30px; width:40px; font-size: 6px;">SAW</div>
+			<div style="position:absolute; left:2px; top:45px; width:40px; font-size: 6px;">TRI</div>
+			<div id="sinarea" style="position:absolute; left:35px; top:0px; width:20px; height:10px;"></div>
+			<div id="sqrarea" style="position:absolute; left:35px; top:15px; width:20px; height:10px;"></div>
+			<div id="sawarea" style="position:absolute; left:35px; top:30px; width:20px; height:10px;"></div>
+			<div id="triarea" style="position:absolute; left:35px; top:45px; width:20px; height:10px;"></div>
+		</div>
+	</div>
+	<div id="mixersection" style="position:absolute; left:80px; top:25px; width:60px; height:100px; border-style:solid; border-width:1px;">
+		<div style="position:absolute; left:0px; top:0px; width:60px; font-size: 8px; text-align: center;">MIXER</div>
+		<div id="levosc1area" style="position:absolute; left:13px; top:15px; width:10px; height:60px;"></div>
+		<div id="levnoisearea" style="position:absolute; left:37px; top:15px; width:10px; height:60px;"></div>
+		<div style="position:absolute; left:5px; top:80px; width:25px; font-size: 6px; text-align:center;">OSC</div>
+		<div style="position:absolute; left:30px; top:80px; width:25px; font-size: 6px; text-align:center;">NOISE</div>
+	</div>
+	<div id="filtersection" style="position:absolute; left:150px; top:25px; width:60px; height:100px; border-style:solid; border-width:1px;">
+		<div style="position:absolute; left:0px; top:0px; width:60px; font-size: 8px; text-align: center;">FILTER</div>
+		<div id="lpfarea" style="position:absolute; left:13px; top:15px; width:10px; height:60px;"></div>
+		<div id="resoarea" style="position:absolute; left:37px; top:15px; width:10px; height:60px;"></div>
+		<div style="position:absolute; left:5px; top:80px; width:25px; font-size: 6px; text-align:center;">LPF</div>
+		<div style="position:absolute; left:30px; top:80px; width:25px; font-size: 6px; text-align:center;">RESO</div>
+	</div>
+</div>
+<div id="keyboardarea1" style="position:absolute; left:10px; top:200px; width:500px; height:100px;"></div>
+<script>
+  $(function() {
+      $('#keyboardarea1').html(createKeyboard(10,10,"keyboard1"));
+      $('#sinarea').html(createButton(0,0,20,10,"sinbtn"));
+      $('#sqrarea').html(createButton(0,0,20,10,"sqrbtn"));
+      $('#sawarea').html(createButton(0,0,20,10,"sawbtn"));
+      $('#triarea').html(createButton(0,0,20,10,"tribtn"));
+      $('#levosc1area').html(createSlider(0,0,10,60,5,"levosc1"));
+      $('#levnoisearea').html(createSlider(0,0,10,60,5,"levnoise"));
+      $('#lpfarea').html(createSlider(0,0,10,60,5,"lpf"));
+      $('#resoarea').html(createSlider(0,0,10,60,5,"reso"));
+  })
+</script>
+</body>
+</html>
